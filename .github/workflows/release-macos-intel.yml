@@ -41,6 +41,12 @@ jobs:
     timeout-minutes: 90
     permissions:
       contents: write
+    # Optional secrets of the fork's own `release` environment: with an
+    # Apple Developer ID here, scripts/mac-sign uses it and the DMG below is
+    # notarized with scripts/mac-dmg, like release.yml does on Can's tags;
+    # without, everything is signed ad hoc and Gatekeeper needs a
+    # right-click, Open on the first launch of a downloaded copy.
+    environment: release
     defaults:
       run:
         shell: bash
@@ -102,6 +108,39 @@ jobs:
           codesign --verify --deep --strict "$app"
           tar -czf dist/herdr-app-macos-x86_64.tar.gz -C dist Herdr.app
           ( cd dist && shasum -a 256 herdr-app-macos-x86_64.tar.gz > SHA256SUMS.txt )
+      - name: Build Herdr.dmg
+        # A DMG alongside the tarball is nicer to install from. With the
+        # Apple secrets above, scripts/mac-dmg signs and notarizes it; its
+        # create-dmg call is the template for the ad-hoc fallback. Non-
+        # blocking: a DMG problem must not cost the tarball (release.yml's
+        # mac-dmg job is continue-on-error the same way).
+        continue-on-error: true
+        env:
+          APPLE_CERTIFICATE_P12: ${{ secrets.APPLE_CERTIFICATE_P12 || '' }}
+          APPLE_CERTIFICATE_PASSWORD: ${{ secrets.APPLE_CERTIFICATE_PASSWORD || '' }}
+          APPLE_API_KEY: ${{ secrets.APPLE_API_KEY || '' }}
+          APPLE_API_KEY_ID: ${{ secrets.APPLE_API_KEY_ID || '' }}
+          APPLE_API_ISSUER: ${{ secrets.APPLE_API_ISSUER || '' }}
+        run: |
+          set -euo pipefail
+          brew install create-dmg jq
+          if [[ -n $APPLE_CERTIFICATE_P12 && -n $APPLE_API_KEY ]]; then
+            scripts/mac-dmg dist/Herdr.app dist/Herdr.dmg
+          else
+            # Ad-hoc: the same window, background and drop layout the
+            # notarized DMG gets, no Apple certificate to wait for.
+            work=$RUNNER_TEMP/dmgwork
+            mkdir "$work/source"
+            ditto dist/Herdr.app "$work/source/Herdr.app"
+            tiffutil -cathidpicheck distribution/macos/dmg/background.png \
+              distribution/macos/dmg/background@2x.png -out "$work/background.tiff"
+            create-dmg --volname Herdr --volicon assets/icons/Herdr.icns \
+              --window-size 660 400 --background "$work/background.tiff" \
+              --icon-size 128 --icon Herdr.app 165 190 --hide-extension Herdr.app \
+              --app-drop-link 495 190 dist/Herdr.dmg "$work/source"
+            scripts/mac-sign dist/Herdr.dmg
+            ( cd dist && shasum -a 256 Herdr.dmg >> SHA256SUMS.txt )
+          fi
       - name: Verify the archive
         run: |
           tar -xOf dist/herdr-app-macos-x86_64.tar.gz \
@@ -117,6 +156,14 @@ jobs:
           name: herdr-app-macos-x86_64
           path: dist/herdr-app-macos-x86_64.tar.gz
           if-no-files-found: error
+          retention-days: 7
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        # Best effort: the DMG step above may have been skipped on failure.
+        with:
+          name: herdr-app-macos-x86_64
+          path: dist/Herdr.dmg
+          if-no-files-found: ignore
+          overwrite: true
           retention-days: 7
       - name: Publish a GitHub release
         if: env.IS_TAG == 'true'
@@ -136,7 +183,8 @@ jobs:
               echo "Herdr $version, built for Intel (x86_64) Macs."
             fi
             cat <<'EOF'
-          **Install**
+          **Install** — easiest with the DMG: open `Herdr.dmg`, drag Herdr to
+          Applications. Or, from the tarball:
 
           ```bash
           tar -xzf herdr-app-macos-x86_64.tar.gz
@@ -148,7 +196,9 @@ jobs:
           complains on the first launch, right-click Herdr and choose Open.
           EOF
           } > "$notes"
+          attach="dist/herdr-app-macos-x86_64.tar.gz dist/SHA256SUMS.txt"
+          [ -e dist/Herdr.dmg ] && attach="$attach dist/Herdr.dmg"
           gh release create "$GITHUB_REF_NAME" \
             --title "Herdr $version (Intel Mac)" \
             --notes-file "$notes" \
-            dist/herdr-app-macos-x86_64.tar.gz dist/SHA256SUMS.txt
+            $attach
