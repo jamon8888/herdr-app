@@ -130,7 +130,7 @@ jobs:
             # Ad-hoc: the same window, background and drop layout the
             # notarized DMG gets, no Apple certificate to wait for.
             work=$RUNNER_TEMP/dmgwork
-            mkdir "$work/source"
+            mkdir -p "$work/source"
             ditto dist/Herdr.app "$work/source/Herdr.app"
             tiffutil -cathidpicheck distribution/macos/dmg/background.png \
               distribution/macos/dmg/background@2x.png -out "$work/background.tiff"
@@ -152,18 +152,15 @@ jobs:
           [[ $(tar -xOf dist/herdr-app-macos-x86_64.tar.gz "$xarch" | file -) == *x86_64* ]] \
             || { echo "packed binary is not x86_64"; exit 1; }
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        # One artifact with whatever got built: the DMG step above may have
+        # been skipped on failure, so it is best effort; the tarball pool is
+        # what must be there.
         with:
           name: herdr-app-macos-x86_64
-          path: dist/herdr-app-macos-x86_64.tar.gz
-          if-no-files-found: error
-          retention-days: 7
-      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
-        # Best effort: the DMG step above may have been skipped on failure.
-        with:
-          name: herdr-app-macos-x86_64
-          path: dist/Herdr.dmg
-          if-no-files-found: ignore
-          overwrite: true
+          path: |
+            dist/herdr-app-macos-x86_64.tar.gz
+            dist/Herdr.dmg
+          if-no-files-found: warn
           retention-days: 7
       - name: Publish a GitHub release
         if: env.IS_TAG == 'true'
